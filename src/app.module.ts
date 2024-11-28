@@ -1,12 +1,17 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
-import { ContentModule } from './modules/content/content.module';
+import { ScheduleModule } from '@nestjs/schedule';
 import { UserModule } from './modules/user/user.module';
+import { ContentModule } from './modules/content/content.module';
+import { CrawlerModule } from './modules/crawler/crawler.module';
+import { SearchModule } from './modules/search/search.module';
 import { SystemModule } from './modules/system/system.module';
 import { SharedModule } from './shared/shared.module';
 import databaseConfig from './config/database.config';
-import { CrawlerModule } from './modules/crawler/crawler.module';
+import { APP_FILTER, APP_INTERCEPTOR } from '@nestjs/core';
+import { TransformInterceptor } from './common/interceptors/transform.interceptor';
+import { HttpExceptionFilter } from './common/filters/http-exception.filter';
 
 @Module({
   imports: [
@@ -16,17 +21,27 @@ import { CrawlerModule } from './modules/crawler/crawler.module';
     }),
     TypeOrmModule.forRootAsync({
       inject: [ConfigService],
-      useFactory: (configService: ConfigService) => ({
+      useFactory: async (configService: ConfigService) => ({
         ...configService.get('database'),
       }),
     }),
-    SharedModule,
-    ContentModule,
+    ScheduleModule.forRoot(),
     UserModule,
-    SystemModule,
+    ContentModule,
     CrawlerModule,
+    SearchModule,
+    SystemModule,
+    SharedModule,
   ],
-  controllers: [],
-  providers: [],
+  providers: [
+    {
+      provide: APP_INTERCEPTOR,
+      useClass: TransformInterceptor,
+    },
+    {
+      provide: APP_FILTER,
+      useClass: HttpExceptionFilter,
+    },
+  ],
 })
 export class AppModule {}

@@ -20,7 +20,9 @@ import {
   UpdateVideoDto, 
   VideoListDto, 
   CreateEpisodeDto,
+  VideoStatus,
 } from '../dto/video.dto';
+import { AdminGuard } from '@modules/user/guards/admin.guard';
 
 @ApiTags('视频管理')
 @Controller('videos')
@@ -28,7 +30,7 @@ export class VideoController {
   constructor(private readonly videoService: VideoService) {}
 
   @Post()
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, AdminGuard)
   @ApiBearerAuth()
   @ApiOperation({ summary: '创建视频' })
   @OperationLog({
@@ -66,7 +68,7 @@ export class VideoController {
   }
 
   @Put(':id')
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, AdminGuard)
   @ApiBearerAuth()
   @ApiOperation({ summary: '更新视频' })
   @OperationLog({
@@ -82,7 +84,7 @@ export class VideoController {
   }
 
   @Delete(':id')
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, AdminGuard)
   @ApiBearerAuth()
   @ApiOperation({ summary: '删除视频' })
   @OperationLog({
@@ -95,19 +97,12 @@ export class VideoController {
   }
 
   @Post(':id/episodes')
-  @UseGuards(JwtAuthGuard)
-  @ApiBearerAuth()
   @ApiOperation({ summary: '添加剧集' })
-  @OperationLog({
-    module: '视频管理',
-    type: 'CREATE',
-    description: '添加剧集',
-  })
-  addEpisode(
-    @Param('id', ParseUUIDPipe) id: string,
-    @Body() createEpisodeDto: CreateEpisodeDto,
+  async addEpisode(
+    @Param('id') id: string,
+    @Body() createEpisodeDto: CreateEpisodeDto
   ) {
-    return this.videoService.addEpisode(id, createEpisodeDto);
+    return await this.videoService.addEpisode(id, createEpisodeDto);
   }
 
   @Post(':id/view')
@@ -120,5 +115,57 @@ export class VideoController {
   async updateViewCount(@Param('id', ParseUUIDPipe) id: string) {
     await this.videoService.updateViewCount(id);
     return { message: 'success' };
+  }
+
+  @Post('batch/delete')
+  @UseGuards(JwtAuthGuard, AdminGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: '批量删除视频' })
+  async batchDelete(@Body() { ids }: { ids: string[] }) {
+    return this.videoService.batchDelete(ids);
+  }
+
+  @Post('batch/status')
+  @UseGuards(JwtAuthGuard, AdminGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: '批量更新视频状态' })
+  async batchUpdateStatus(
+    @Body() { ids, status }: { ids: string[]; status: VideoStatus }
+  ) {
+    return this.videoService.batchUpdateStatus(ids, status);
+  }
+
+  @Get(':id/episodes')
+  @ApiOperation({ summary: '获取视频剧集列表' })
+  async getEpisodes(@Param('id') id: string) {
+    return await this.videoService.getEpisodes(id);
+  }
+
+  @Get(':videoId/episodes/:episodeId')
+  @ApiOperation({ summary: '获取单个剧集详情' })
+  async getEpisode(
+    @Param('videoId') videoId: string,
+    @Param('episodeId') episodeId: string
+  ) {
+    return await this.videoService.getEpisode(videoId, episodeId);
+  }
+
+  @Put(':videoId/episodes/:episodeId')
+  @ApiOperation({ summary: '更新剧集' })
+  async updateEpisode(
+    @Param('videoId') videoId: string,
+    @Param('episodeId') episodeId: string,
+    @Body() updateEpisodeDto: CreateEpisodeDto
+  ) {
+    return await this.videoService.updateEpisode(videoId, episodeId, updateEpisodeDto);
+  }
+
+  @Delete(':videoId/episodes/:episodeId')
+  @ApiOperation({ summary: '删除剧集' })
+  async deleteEpisode(
+    @Param('videoId') videoId: string,
+    @Param('episodeId') episodeId: string
+  ) {
+    return await this.videoService.deleteEpisode(videoId, episodeId);
   }
 } 

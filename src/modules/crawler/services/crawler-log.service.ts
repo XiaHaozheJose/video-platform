@@ -42,8 +42,8 @@ export class CrawlerLogService {
     log: CrawlerLog,
     processedCount: number,
     successCount: number,
-    failCount: number,
-  ) {
+    failCount: number
+  ): Promise<void> {
     log.processedCount = processedCount;
     log.successCount = successCount;
     log.failCount = failCount;

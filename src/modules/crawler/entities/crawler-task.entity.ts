@@ -1,5 +1,6 @@
-import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, UpdateDateColumn, OneToMany } from 'typeorm';
+import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, UpdateDateColumn, OneToMany, ManyToOne } from 'typeorm';
 import { CrawlerLog } from './crawler-log.entity';
+import { CrawlerSource } from './crawler-source.entity';
 
 export enum TaskStatus {
   PENDING = 'pending',
@@ -21,6 +22,12 @@ export class CrawlerTask {
 
   @Column({ length: 100 })
   name: string;
+
+  @ManyToOne(() => CrawlerSource)
+  source: CrawlerSource;
+
+  @Column({ nullable: true })
+  sourceId: string;
 
   @Column({ type: 'enum', enum: TaskType, default: TaskType.INCREMENT })
   type: TaskType;

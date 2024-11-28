@@ -1,10 +1,8 @@
-import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, UpdateDateColumn } from 'typeorm';
+import { Entity, Column } from 'typeorm';
+import { BaseEntity } from '@common/entities/base.entity';
 
 @Entity('actors')
-export class Actor {
-  @PrimaryGeneratedColumn('uuid')
-  id: string;
-
+export class Actor extends BaseEntity {
   @Column({ length: 50 })
   name: string;
 
@@ -13,10 +11,4 @@ export class Actor {
 
   @Column({ type: 'text', nullable: true })
   description: string;
-
-  @CreateDateColumn()
-  createdAt: Date;
-
-  @UpdateDateColumn()
-  updatedAt: Date;
 } 

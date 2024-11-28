@@ -5,16 +5,18 @@ import { Cron, SchedulerRegistry } from '@nestjs/schedule';
 import { CronJob } from 'cron'
 import { CrawlerTask, TaskStatus, TaskType } from '../entities/crawler-task.entity';
 import { CrawlerLog, LogLevel } from '../entities/crawler-log.entity';
-import { CreateTaskDto, UpdateTaskDto, TaskResultDto } from '../dto/crawler-task.dto';
+import { CreateTaskDto, UpdateTaskDto, TaskResultDto, CrawlProgressDto, VideoInfo } from '../dto/crawler-task.dto';
 import { VideoService } from '@modules/content/services/video.service';
 import { CreateVideoDto, VideoStatus } from '@modules/content/dto/video.dto';
 import { LoggerService } from '@shared/services/logger.service';
-import { Actor } from '@modules/content/entities/actor.entity';
-import { Director } from '@modules/content/entities/director.entity';
+import { Person, PersonRole } from '@modules/content/entities/person.entity';
 import { Category } from '@modules/content/entities/category.entity';
 import { Video } from '@modules/content/entities/video.entity';
 import { CrawlerLogService } from './crawler-log.service';
 import { ResourceAdapterFactory } from '../factories/resource-adapter.factory';
+import { CrawlerSource } from '../entities/crawler-source.entity';
+import { EventEmitter2 } from '@nestjs/event-emitter';
+import { CrawlerThirdResourceDto, CrawlerThirdResourceDataDto, CrawlerThirdResourceClassDto } from '../dto/crawler-third-resource.dto';
 
 @Injectable()
 export class CrawlerService {
@@ -23,10 +25,12 @@ export class CrawlerService {
   constructor(
     @InjectRepository(CrawlerTask)
     private crawlerTaskRepository: Repository<CrawlerTask>,
-    @InjectRepository(Actor)
-    private actorRepository: Repository<Actor>,
-    @InjectRepository(Director)
-    private directorRepository: Repository<Director>,
+    @InjectRepository(CrawlerSource)
+    private crawlerSourceRepository: Repository<CrawlerSource>,
+    @InjectRepository(CrawlerLog)
+    private crawlerLogRepository: Repository<CrawlerLog>,
+    @InjectRepository(Person)
+    private personRepository: Repository<Person>,
     @InjectRepository(Category)
     private categoryRepository: Repository<Category>,
     private videoService: VideoService,
@@ -34,10 +38,62 @@ export class CrawlerService {
     private logger: LoggerService,
     private crawlerLogService: CrawlerLogService,
     private resourceAdapterFactory: ResourceAdapterFactory,
+    private eventEmitter: EventEmitter2,
   ) {}
 
+  private async findOrCreatePerson(name: string, role: PersonRole): Promise<Person> {
+    let person = await this.personRepository.findOne({
+      where: { name, role }
+    });
+
+    if (!person) {
+      person = this.personRepository.create({
+        name,
+        role,
+      });
+      await this.personRepository.save(person);
+    }
+
+    return person;
+  }
+
+  private async processActors(actorNames: string[]): Promise<string[]> {
+    const actors = await Promise.all(
+      actorNames.map(name => this.findOrCreatePerson(name, PersonRole.ACTOR))
+    );
+    return actors.map(actor => actor.id);
+  }
+
+  private async processDirectors(directorNames: string[]): Promise<string[]> {
+    const directors = await Promise.all(
+      directorNames.map(name => this.findOrCreatePerson(name, PersonRole.DIRECTOR))
+    );
+    return directors.map(director => director.id);
+  }
+
   async createTask(createTaskDto: CreateTaskDto): Promise<CrawlerTask> {
-    const task = this.crawlerTaskRepository.create(createTaskDto);
+    // 先检查爬虫源是否存在
+    const source = await this.crawlerSourceRepository.findOne({
+      where: { id: createTaskDto.sourceId }
+    });
+
+    if (!source) {
+      throw new NotFoundException('爬虫源不存在');
+    }
+
+    // 创建任务
+    const task = this.crawlerTaskRepository.create({
+      name: createTaskDto.name,
+      sourceId: createTaskDto.sourceId,  // 确保设置 sourceId
+      type: createTaskDto.type,
+      cron: createTaskDto.cron,
+      config: {
+        interval: createTaskDto.interval,
+        intervalUnit: createTaskDto.intervalUnit,
+        categoryMapping: createTaskDto.categoryMapping,
+      },
+    });
+
     await this.crawlerTaskRepository.save(task);
     
     if (task.cron) {
@@ -146,47 +202,79 @@ export class CrawlerService {
     };
 
     try {
-      // 创建资源适配器
-      const adapter = this.resourceAdapterFactory.createAdapter(
-        task.config.type || 'nangua',
-        task.config.url
-      );
+      const source = await this.crawlerSourceRepository.findOne({
+        where: { id: task.sourceId }
+      });
 
+      if (!source) {
+        throw new NotFoundException('爬虫源不存在');
+      }
+
+      const adapter = this.resourceAdapterFactory.createAdapter(source.baseUrl);
       let currentPage = 1;
       let hasMore = true;
 
+      // 获取第一页来确定总页数
+      const firstPageData = await adapter.getList(1);
+      const totalPages = Math.ceil(Number(firstPageData.total) / Number(firstPageData.limit));
+
       while (hasMore) {
-        // 获取列表数据
-        const list = await adapter.getList(currentPage);
+        const listData = currentPage === 1 ? firstPageData : await adapter.getList(currentPage);
+        const progressData: CrawlProgressDto = {
+          currentPage,
+          totalPages,
+          videos: [],
+        };
 
-        if (!list || list.length === 0) {
-          hasMore = false;
-          break;
-        }
-
-        // 处理每个视频
-        for (const item of list) {
+        for (const item of listData.list) {
           try {
-            // 检查是否应该处理该视频
-            if (!this.shouldProcessVideo(item, task.config)) {
-              continue;
+            const videoInfo: VideoInfo = {
+              name: item.vod_name,
+              sourceName: source.name,
+              sourceType: item.type_name,
+              status: 'skipped',
+            };
+
+            // 检查分类映射
+            const mapping = task.config.categoryMapping.find(
+              m => m.sourceId === item.type_id.toString() && m.enabled
+            );
+
+            if (mapping) {
+              videoInfo.mappedCategory = {
+                sourceId: mapping.sourceId,
+                sourceName: mapping.sourceName,
+                targetId: mapping.targetId,
+                targetName: mapping.targetName,
+              };
+
+              // 检查是否已存在
+              const existingVideo = await this.videoService.findByExternalId(
+                item.vod_id.toString()
+              );
+
+              if (existingVideo) {
+                // 检查是否需要更新
+                const needsUpdate = this.checkNeedsUpdate(existingVideo, item);
+                if (needsUpdate && task.type === TaskType.INCREMENT) {
+                  await this.updateVideo(existingVideo, item, task.config);
+                  videoInfo.status = 'updated';
+                  result.successCount++;
+                } else {
+                  videoInfo.status = 'skipped';
+                  videoInfo.reason = '无需更新';
+                }
+              } else {
+                // 新增视频
+                await this.createVideo(item);
+                videoInfo.status = 'new';
+                result.successCount++;
+              }
+            } else {
+              videoInfo.reason = '无匹配分类';
             }
 
-            // 获取详情数据
-            const videoDetail = await adapter.getDetail(item.vod_id);
-
-            // 检查是否已存在
-            const existingVideo = await this.videoService.findByExternalId(videoDetail.vod_id.toString());
-            
-            if (existingVideo && task.type === TaskType.INCREMENT) {
-              // 增量更新
-              await this.updateVideo(existingVideo, videoDetail, task.config);
-            } else if (!existingVideo) {
-              // 新增视频
-              await this.createVideo(videoDetail);
-            }
-
-            result.successCount++;
+            progressData.videos.push(videoInfo);
           } catch (error) {
             result.failCount++;
             result.failures.push({
@@ -194,26 +282,26 @@ export class CrawlerService {
               error: error.message,
             });
           }
-
-          // 采集间隔
-          if (task.config.interval) {
-            await new Promise(resolve => setTimeout(resolve, task.config.interval));
-          }
         }
 
-        // 更新进度
-        await this.crawlerLogService.updateProgress(
-          log,
-          currentPage * list.length,
-          result.successCount,
-          result.failCount
-        );
+        // 发送进度更新
+        this.eventEmitter.emit(`task.progress.${task.id}`, {
+          currentPage,
+          totalPages,
+          processedCount: currentPage * listData.list.length,
+          successCount: result.successCount,
+          failCount: result.failCount,
+          videos: progressData.videos,
+        });
 
-        // 增量采集只处理第一页
-        if (task.type === TaskType.INCREMENT) {
+        if (task.type === TaskType.INCREMENT || currentPage >= totalPages) {
           hasMore = false;
         } else {
           currentPage++;
+          // 采集间隔
+          if (task.config?.interval) {
+            await new Promise(resolve => setTimeout(resolve, task.config.interval));
+          }
         }
       }
     } catch (error) {
@@ -221,6 +309,35 @@ export class CrawlerService {
     }
 
     return result;
+  }
+
+  private checkNeedsUpdate(existingVideo: Video, newData: CrawlerThirdResourceDataDto): boolean {
+    return (
+      existingVideo.cover !== newData.vod_pic ||
+      existingVideo.description !== newData.vod_content?.replace(/<[^>]+>/g, '') ||
+      existingVideo.title !== newData.vod_name ||
+      existingVideo.year !== parseInt(newData.vod_year) ||
+      existingVideo.area !== newData.vod_area ||
+      existingVideo.language !== newData.vod_lang ||
+      existingVideo.rating !== parseFloat(newData.vod_score) ||
+      existingVideo.updateStatus !== newData.vod_remarks ||
+      this.checkEpisodesNeedUpdate(existingVideo.episodes, newData.vod_play_url, newData.vod_play_from)
+    );
+  }
+
+  private checkEpisodesNeedUpdate(existingEpisodes: any[], newPlayUrl: string, newPlayFrom: string): boolean {
+    // 解析新的播放地址
+    const newEpisodes = this.transformEpisodes(newPlayUrl, newPlayFrom);
+      
+    // 如果集数不同，需要更新
+    if (existingEpisodes.length !== newEpisodes.length) {
+      return true;
+    }
+
+    // 检查每一集的播放地址是否有变化
+    return existingEpisodes.some((episode, index) => 
+      episode.playUrl !== newEpisodes[index].playUrl
+    );
   }
 
   private shouldProcessVideo(videoDetail: any, config: any): boolean {
@@ -261,7 +378,7 @@ export class CrawlerService {
     await this.videoService.create(videoDto);
   }
 
-  private async updateVideo(existingVideo: Video, videoDetail: any, config: any): Promise<void> {
+  private async updateVideo(existingVideo: Video, videoDetail: CrawlerThirdResourceDataDto, config: any): Promise<void> {
     const { updateStrategy } = config.matchRules || {};
     const updateDto: any = {};
 
@@ -286,7 +403,7 @@ export class CrawlerService {
 
     // 更新剧集信息
     if (updateStrategy?.episodes) {
-      const episodes = this.transformEpisodes(videoDetail.vod_play_url);
+      const episodes = this.transformEpisodes(videoDetail.vod_play_url, videoDetail.vod_play_from);
       if (episodes?.length) {
         const existingEpisodes = existingVideo.episodes || [];
         
@@ -309,62 +426,42 @@ export class CrawlerService {
     }
   }
 
-  private async handleCategories(rawData: any, task: CrawlerTask): Promise<string[]> {
-    const typeId = rawData.type_id;
-    const typeName = rawData.type_name;
-    
-    // 从配置中获取分类映射
-    const categoryMapping = task.config.categoryMapping || [];
-    const mappedCategory = categoryMapping.find(mapping => mapping.sourceId === typeId);
-    const categoryName = mappedCategory?.targetName || typeName;
-    
-    // 查找或创建分类
-    let category = await this.categoryRepository.findOne({ 
-      where: { name: categoryName } 
-    });
-    
-    if (!category) {
-      category = await this.categoryRepository.save(
-        this.categoryRepository.create({
-          name: categoryName,
-        })
-      );
+  private async handleCategories(videoDetail: any, task: CrawlerTask): Promise<string[]> {
+    const mapping = task.config.categoryMapping.find(
+      m => m.sourceId === videoDetail.type_id.toString() && m.enabled
+    );
+
+    if (!mapping) {
+      return [];
     }
-    
-    return [category.id];
+
+    return [mapping.targetId];
   }
 
-  private async transformData(rawData: any): Promise<CreateVideoDto> {
-    // 处理演员和导演数据
-    const actorNames = rawData.vod_actor?.split(',').filter(Boolean) || [];
-    const directorNames = rawData.vod_director?.split(',').filter(Boolean) || [];
+  private async transformData(rawData: CrawlerThirdResourceDataDto): Promise<CreateVideoDto> {
+    // 处理演员和导演数据，支持多种分隔符
+    const actorNames = rawData.vod_actor
+      ?.split(/[,，、\s]+/)
+      .filter(name => name && name.trim())
+      .map(name => name.trim()) || [];
+
+    const directorNames = rawData.vod_director
+      ?.split(/[,，、\s]+/)
+      .filter(name => name && name.trim())
+      .map(name => name.trim()) || [];
 
     // 查找或创建演员
     const actorIds = await Promise.all(
-      actorNames.map(async (name) => {
-        let actor = await this.actorRepository.findOne({ where: { name: name.trim() } });
-        if (!actor) {
-          actor = await this.actorRepository.save(
-            this.actorRepository.create({
-              name: name.trim(),
-            })
-          );
-        }
+      actorNames.map(async name => {
+        const actor = await this.findOrCreatePerson(name, PersonRole.ACTOR);
         return actor.id;
       })
     );
 
     // 查找或创建导演
     const directorIds = await Promise.all(
-      directorNames.map(async (name) => {
-        let director = await this.directorRepository.findOne({ where: { name: name.trim() } });
-        if (!director) {
-          director = await this.directorRepository.save(
-            this.directorRepository.create({
-              name: name.trim(),
-            })
-          );
-        }
+      directorNames.map(async name => {
+        const director = await this.findOrCreatePerson(name, PersonRole.DIRECTOR);
         return director.id;
       })
     );
@@ -372,18 +469,25 @@ export class CrawlerService {
     // 处理分类信息
     const categoryIds = await this.handleCategories(rawData, this.currentTask);
 
-    // 处理剧集信息
-    const episodes = this.transformEpisodes(rawData.vod_play_url);
+    // 处理剧集信息，传入播放源
+    const episodes = this.transformEpisodes(
+      rawData.vod_play_url,
+      rawData.vod_play_from
+    );
+
+    // 处理描述，去除HTML标签
+    const description = rawData.vod_blurb || rawData.vod_content || '';
+    const cleanDescription = description.replace(/<[^>]+>/g, '').trim();
 
     return {
       title: rawData.vod_name,
-      description: rawData.vod_content,
-      cover: rawData.vod_pic,
+      description: cleanDescription,
+      cover: rawData.vod_pic || '',
       year: parseInt(rawData.vod_year) || new Date().getFullYear(),
-      area: rawData.vod_area,
-      language: rawData.vod_lang,
+      area: rawData.vod_area || '未知',
+      language: rawData.vod_lang || '未知',
       externalId: rawData.vod_id.toString(),
-      source: 'crawler',
+      source: rawData.vod_play_from || 'crawler',
       categoryIds,
       actorIds,
       directorIds,
@@ -391,45 +495,65 @@ export class CrawlerService {
       rating: parseFloat(rawData.vod_score) || 0,
       updateStatus: rawData.vod_remarks || '',
       episodes,
+      duration: rawData.vod_duration || '',
+      releaseDate: rawData.vod_pubdate || null,
     };
   }
 
-  private transformEpisodes(playUrl: string): any[] {
+  private transformEpisodes(playUrl: string, playFrom: string): any[] {
     if (!playUrl) return [];
 
     try {
       const episodes = [];
-      const sources = playUrl.split('$$$'); // 处理多个播放源
+      // 直接使用 # 分割剧集
+      const episodeList = playUrl.split('#').filter(Boolean);
       
-      sources.forEach((source, sourceIndex) => {
-        const [sourceName, episodesStr] = source.split('$');
-        if (!episodesStr) return;
+      episodeList.forEach((item, index) => {
+        // 分割集标题和播放地址，用 $ 分割
+        const [title = '', url = ''] = item.split('$');
+        if (!url) return;
 
-        const episodeList = episodesStr.split('#');
-        episodeList.forEach((item, index) => {
-          const [title, url] = item.split('$');
-          episodes.push({
-            title,
-            episode: index + 1,
-            playUrl: url,
-            source: sourceName,
-          });
+        // 从标题中提取集数
+        const episodeMatch = title.match(/(\d+)/);
+        const episodeNumber = episodeMatch ? parseInt(episodeMatch[1]) : index + 1;
+
+        episodes.push({
+          title: title.trim() || `第${episodeNumber}集`,
+          episode: episodeNumber,
+          playUrl: url.trim(),
+          source: playFrom || 'unknown',  // 使用 vod_play_from 作为播放源
         });
       });
 
-      return episodes;
+      // 按集数排序
+      return episodes.sort((a, b) => a.episode - b.episode);
     } catch (error) {
       this.logger.error(`Failed to transform episodes: ${error.message}`, error.stack, 'CrawlerService');
       return [];
     }
   }
 
-  async findAllTasks() {
-    return await this.crawlerTaskRepository.find({
-      order: {
-        createdAt: 'DESC',
-      },
-    });
+  async findAll(query: any) {
+    const { page = 1, limit = 10, status } = query;
+    const queryBuilder = this.crawlerTaskRepository.createQueryBuilder('task')
+      .leftJoinAndSelect('task.source', 'source');
+
+    if (status) {
+      queryBuilder.where('task.status = :status', { status });
+    }
+
+    const [items, total] = await queryBuilder
+      .orderBy('task.createdAt', 'DESC')
+      .skip((page - 1) * limit)
+      .take(limit)
+      .getManyAndCount();
+
+    return {
+      items,
+      total,
+      page,
+      limit,
+    };
   }
 
   async findOneTask(id: string) {
@@ -474,12 +598,29 @@ export class CrawlerService {
       // 忽略不存在的任务
     }
 
-    await this.crawlerTaskRepository.remove(task);
+    try {
+      // 先删除关联的日志记录
+      await this.crawlerLogRepository
+        .createQueryBuilder()
+        .delete()
+        .where('taskId = :taskId', { taskId: id })
+        .execute();
+
+      // 然后删除任务
+      await this.crawlerTaskRepository.remove(task);
+    } catch (error) {
+      this.logger.error(
+        'Failed to remove crawler task',
+        error.stack,
+        'CrawlerService'
+      );
+      throw new BadRequestException('删除任务失败：' + error.message);
+    }
   }
 
-  async getSourceCategories(url: string): Promise<Array<{ id: string; name: string }>> {
+  async getSourceCategories(url: string): Promise<CrawlerThirdResourceClassDto[]> {
     try {
-      const adapter = this.resourceAdapterFactory.createAdapter('nangua', url);
+      const adapter = this.resourceAdapterFactory.createAdapter(url);
       return await adapter.getCategories();
     } catch (error) {
       this.logger.error('Failed to get source categories', error.stack, 'CrawlerService');

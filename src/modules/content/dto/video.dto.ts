@@ -1,5 +1,7 @@
-import { IsString, IsNumber, IsOptional, IsArray, IsUUID, IsEnum, Min, Max, IsUrl } from 'class-validator';
+import { IsString, IsNumber, IsOptional, IsArray, IsUUID, IsEnum, Min, Max, IsUrl, IsNotEmpty, ArrayNotEmpty, ValidateNested } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { Type } from 'class-transformer';
+import { Transform } from 'class-transformer';
 
 export enum VideoStatus {
   DRAFT = 'draft',
@@ -10,6 +12,7 @@ export enum VideoStatus {
 export class CreateEpisodeDto {
   @ApiProperty({ description: '剧集标题' })
   @IsString()
+  @IsNotEmpty({ message: '剧集标题不能为空' })
   title: string;
 
   @ApiProperty({ description: '剧集号' })
@@ -59,6 +62,12 @@ export class CreateVideoDto {
   @IsString()
   language?: string;
 
+  
+  @ApiPropertyOptional({ description: '时长' })
+  @IsOptional()
+  @IsString()
+  duration?: string;
+
   @ApiPropertyOptional({ description: '外部ID' })
   @IsOptional()
   @IsString()
@@ -74,11 +83,11 @@ export class CreateVideoDto {
   @IsEnum(VideoStatus)
   status?: VideoStatus = VideoStatus.DRAFT;
 
-  @ApiPropertyOptional({ description: '分类ID列表' })
-  @IsOptional()
+  @ApiProperty({ description: '分类ID列表' })
   @IsArray()
   @IsUUID('4', { each: true })
-  categoryIds?: string[];
+  @ArrayNotEmpty({ message: '请至少选择一个分类' })
+  categoryIds: string[];
 
   @ApiPropertyOptional({ description: '演员ID列表' })
   @IsOptional()
@@ -107,7 +116,20 @@ export class CreateVideoDto {
   @ApiPropertyOptional({ description: '剧集列表' })
   @IsOptional()
   @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => CreateEpisodeDto)
   episodes?: CreateEpisodeDto[];
+
+  @ApiPropertyOptional({ description: '发布日期' })
+  @IsOptional()
+  @IsString()
+  releaseDate?: string;
+
+  @ApiPropertyOptional({ description: '标签列表' })
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  tags?: string[];
 }
 
 export class UpdateVideoDto extends CreateVideoDto {}
@@ -115,12 +137,14 @@ export class UpdateVideoDto extends CreateVideoDto {}
 export class VideoListDto {
   @ApiPropertyOptional({ description: '页码', default: 1 })
   @IsOptional()
+  @Type(() => Number)
   @IsNumber()
   @Min(1)
   page?: number = 1;
 
   @ApiPropertyOptional({ description: '每页数量', default: 10 })
   @IsOptional()
+  @Type(() => Number)
   @IsNumber()
   @Min(1)
   @Max(100)
@@ -128,27 +152,33 @@ export class VideoListDto {
 
   @ApiPropertyOptional({ description: '分类ID' })
   @IsOptional()
-  @IsUUID('4')
+  @IsString()
+  @Transform(({ value }) => value || undefined)
   categoryId?: string;
 
   @ApiPropertyOptional({ description: '年份' })
   @IsOptional()
+  @Type(() => Number)
   @IsNumber()
+  @Transform(({ value }) => value || undefined)
   year?: number;
 
   @ApiPropertyOptional({ description: '地区' })
   @IsOptional()
   @IsString()
+  @Transform(({ value }) => value || undefined)
   area?: string;
 
   @ApiPropertyOptional({ description: '状态', enum: VideoStatus })
   @IsOptional()
   @IsEnum(VideoStatus)
+  @Transform(({ value }) => value || undefined)
   status?: VideoStatus;
 
   @ApiPropertyOptional({ description: '搜索关键词' })
   @IsOptional()
   @IsString()
+  @Transform(({ value }) => value || undefined)
   keyword?: string;
 }
 

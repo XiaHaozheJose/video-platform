@@ -1,28 +1,32 @@
-import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, UpdateDateColumn } from 'typeorm';
+import { Entity, Column } from 'typeorm';
+import { BaseEntity } from '@common/entities/base.entity';
+
+export enum UserRole {
+  ADMIN = 'admin',
+  USER = 'user',
+}
 
 @Entity('users')
-export class User {
-  @PrimaryGeneratedColumn('uuid')
-  id: string;
-
-  @Column({ length: 50, unique: true })
+export class User extends BaseEntity {
+  @Column({ length: 100, unique: true })
   username: string;
 
-  @Column({ select: false })
-  password: string;
-
-  @Column({ length: 100, unique: true })
+  @Column({ length: 100, unique: true, nullable: true })
   email: string;
 
-  @Column({ default: false })
+  @Column()
+  password: string;
+
+  @Column({
+    type: 'enum',
+    enum: UserRole,
+    default: UserRole.USER
+  })
+  role: UserRole;
+
+  @Column({ default: true })
   isActive: boolean;
 
-  @Column({ nullable: true, length: 200 })
+  @Column({ nullable: true })
   avatar: string;
-
-  @CreateDateColumn()
-  createdAt: Date;
-
-  @UpdateDateColumn()
-  updatedAt: Date;
 } 

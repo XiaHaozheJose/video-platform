@@ -1,20 +1,36 @@
-import { Entity, PrimaryGeneratedColumn, Column, Tree, TreeParent, TreeChildren } from 'typeorm';
+import { Entity, Column, Tree, TreeParent, TreeChildren, ManyToMany, JoinTable } from 'typeorm';
+import { BaseEntity } from '@common/entities/base.entity';
+import { Video } from './video.entity';
 
 @Entity('categories')
 @Tree("closure-table")
-export class Category {
-  @PrimaryGeneratedColumn('uuid')
-  id: string;
-
+export class Category extends BaseEntity {
   @Column({ length: 50 })
   name: string;
 
   @Column({ nullable: true })
   description: string;
 
+  @Column({ type: 'int', default: 0 })
+  sort: number;
+
+  @Column({ type: 'boolean', default: true })
+  isLeaf: boolean;
+
+  @Column({ type: 'boolean', default: false })
+  isRoot: boolean;
+
   @TreeParent()
   parent: Category;
 
   @TreeChildren()
   children: Category[];
+
+  @ManyToMany(() => Video, video => video.categories)
+  @JoinTable({
+    name: 'video_categories',
+    joinColumn: { name: 'category_id', referencedColumnName: 'id' },
+    inverseJoinColumn: { name: 'video_id', referencedColumnName: 'id' },
+  })
+  videos: Video[];
 } 

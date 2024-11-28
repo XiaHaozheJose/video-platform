@@ -1,4 +1,4 @@
-import { Controller, Post, Body, UseGuards, Get, Put, BadRequestException } from '@nestjs/common';
+import { Controller, Post, Body, UseGuards, Get, Put, BadRequestException, UnauthorizedException } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { AuthService } from '../services/auth.service';
 import { RegisterDto, LoginDto } from '../dto/auth.dto';
@@ -8,6 +8,8 @@ import { CurrentUser } from '../decorators/current-user.decorator';
 import { User } from '../entities/user.entity';
 import { RateLimit } from '@common/decorators/rate-limit.decorator';
 import { OperationLog } from '@common/decorators/operation-log.decorator';
+import { AdminGuard } from '../guards/admin.guard';
+import { UserRole } from '../entities/user.entity';
 
 @ApiTags('认证')
 @Controller('auth')
@@ -97,5 +99,24 @@ export class AuthController {
     return {
       access_token: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJhZG1pbiIsImlhdCI6MTcwOTI4MTYwMCwiZXhwIjoxNzQwODE3NjAwfQ.2vTUgbP983RvF2Ld-TJbZ_2Qh_HrD4C1yQqE_0zgego'
     };
+  }
+
+  @Post('admin/register')
+  @UseGuards(JwtAuthGuard, AdminGuard)  // 只有管理员才能创建其他管理员
+  @ApiBearerAuth()
+  @ApiOperation({ summary: '创建管理员账号' })
+  async createAdmin(@Body() registerDto: RegisterDto) {
+    return this.authService.createAdmin(registerDto);
+  }
+
+  @Post('admin/login')
+  @ApiOperation({ summary: '管理员登录' })
+  @RateLimit({
+    points: 5,
+    duration: 300,
+    errorMessage: '登录尝试次数过多，请5分钟后再试',
+  })
+  async adminLogin(@Body() loginDto: LoginDto) {
+    return await this.authService.adminLogin(loginDto);
   }
 } 

@@ -19,8 +19,8 @@ export class CrawlerController {
 
   @Get('tasks')
   @ApiOperation({ summary: '获取任务列表' })
-  findAllTasks() {
-    return this.crawlerService.findAllTasks();
+  findAllTasks(@Query() query: any) {
+    return this.crawlerService.findAll(query);
   }
 
   @Get('tasks/:id')

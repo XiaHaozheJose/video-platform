@@ -1,34 +1,50 @@
-import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, UpdateDateColumn, ManyToMany, JoinTable, OneToMany } from 'typeorm';
+import { Entity, Column, ManyToMany, JoinTable, OneToMany } from 'typeorm';
+import { BaseEntity } from '@common/entities/base.entity';
 import { Category } from './category.entity';
 import { Episode } from './episode.entity';
-import { Actor } from './actor.entity';
-import { Director } from './director.entity';
+import { Person } from './person.entity';
+
+export enum VideoStatus {
+  DRAFT = 'draft',
+  PUBLISHED = 'published',
+  HIDDEN = 'hidden',
+}
 
 @Entity('videos')
-export class Video {
-  @PrimaryGeneratedColumn('uuid')
-  id: string;
-
-  @Column({ nullable: true })
-  externalId: string;
-
+export class Video extends BaseEntity {
   @Column({ length: 100 })
   title: string;
 
   @Column({ type: 'text', nullable: true })
   description: string;
 
-  @Column({ length: 200, nullable: true })
+  @Column({ nullable: true })
   cover: string;
 
-  @Column({ type: 'int', default: 0 })
+  @Column({ type: 'int', nullable: true })
   year: number;
 
-  @Column({ length: 50, nullable: true })
+  @Column({ nullable: true })
   area: string;
 
-  @Column({ length: 50, nullable: true })
+  @Column({ nullable: true })
   language: string;
+
+  @Column({ nullable: true })
+  duration: string;
+
+  @Column({ nullable: true })
+  externalId: string;
+
+  @Column({ nullable: true })
+  source: string;
+
+  @Column({
+    type: 'enum',
+    enum: VideoStatus,
+    default: VideoStatus.DRAFT
+  })
+  status: VideoStatus;
 
   @Column({ type: 'decimal', precision: 2, scale: 1, default: 0 })
   rating: number;
@@ -36,13 +52,10 @@ export class Video {
   @Column({ type: 'int', default: 0 })
   viewCount: number;
 
-  @Column({ length: 50, nullable: true })
+  @Column({ nullable: true })
   updateStatus: string;
 
-  @Column({ length: 50, nullable: true })
-  source: string;
-
-  @ManyToMany(() => Category)
+  @ManyToMany(() => Category, { cascade: true })
   @JoinTable({
     name: 'video_categories',
     joinColumn: { name: 'video_id', referencedColumnName: 'id' },
@@ -50,28 +63,30 @@ export class Video {
   })
   categories: Category[];
 
-  @ManyToMany(() => Actor)
+  @ManyToMany(() => Person, person => person.actedVideos)
   @JoinTable({
     name: 'video_actors',
     joinColumn: { name: 'video_id', referencedColumnName: 'id' },
     inverseJoinColumn: { name: 'actor_id', referencedColumnName: 'id' },
   })
-  actors: Actor[];
+  actors: Person[];
 
-  @ManyToMany(() => Director)
+  @ManyToMany(() => Person, person => person.directedVideos)
   @JoinTable({
     name: 'video_directors',
     joinColumn: { name: 'video_id', referencedColumnName: 'id' },
     inverseJoinColumn: { name: 'director_id', referencedColumnName: 'id' },
   })
-  directors: Director[];
+  directors: Person[];
 
-  @OneToMany(() => Episode, episode => episode.video)
+  @OneToMany(() => Episode, episode => episode.video, {
+    cascade: true,
+  })
   episodes: Episode[];
 
-  @CreateDateColumn()
-  createdAt: Date;
+  @Column('simple-array', { nullable: true })
+  tags: string[];
 
-  @UpdateDateColumn()
-  updatedAt: Date;
+  @Column({ type: 'timestamp', nullable: true })
+  releaseDate: Date;
 } 

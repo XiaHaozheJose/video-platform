@@ -6,10 +6,18 @@ import { TransformInterceptor } from './common/interceptors/transform.intercepto
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
 import { LoggingInterceptor } from './common/interceptors/logging.interceptor';
 import { LoggerService } from './shared/services/logger.service';
+import { NestExpressApplication } from '@nestjs/platform-express';
+import { join } from 'path';
+import { Response } from 'express';
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule, {
+  const app = await NestFactory.create<NestExpressApplication>(AppModule, {
     bufferLogs: true,
+  });
+
+  // 配置静态文件服务
+  app.useStaticAssets(join(__dirname, '..', 'uploads'), {
+    prefix: '/uploads/',
   });
 
   // 使用自定义logger
@@ -56,6 +64,12 @@ async function bootstrap() {
     .build();
   const document = SwaggerModule.createDocument(app, config);
   SwaggerModule.setup('docs', app, document);
+
+  // 提供 JSON 格式文档的路由
+  app.getHttpAdapter().get('/swagger-json', (req, res: Response) => {
+    res.setHeader('Content-Type', 'application/json');
+    res.send(document);
+  });
 
   await app.listen(3000);
 }

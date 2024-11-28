@@ -1,5 +1,6 @@
-import { IsString, IsOptional, IsUUID } from 'class-validator';
+import { IsString, IsOptional, IsUUID, IsInt, Min } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { Type } from 'class-transformer';
 
 export class CreateCategoryDto {
   @ApiProperty({ description: '分类名称' })
@@ -15,6 +16,13 @@ export class CreateCategoryDto {
   @IsOptional()
   @IsUUID('4')
   parentId?: string;
+
+  @ApiPropertyOptional({ description: '排序', default: 0 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  sort?: number = 0;
 }
 
 export class UpdateCategoryDto extends CreateCategoryDto {}
