@@ -1,13 +1,9 @@
-import { IsString, IsNumber, IsOptional, IsArray, IsUUID, IsEnum, Min, Max, IsUrl, IsNotEmpty, ArrayNotEmpty, ValidateNested } from 'class-validator';
+import { IsString, IsNumber, IsOptional, IsArray, IsUUID, IsEnum, Min, Max, IsUrl, IsNotEmpty, ArrayNotEmpty, ValidateNested, IsObject } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
 import { Transform } from 'class-transformer';
-
-export enum VideoStatus {
-  DRAFT = 'draft',
-  PUBLISHED = 'published',
-  HIDDEN = 'hidden',
-}
+import { VideoStatus, VideoPlayFormat } from '../entities/video.entity';
+import { TagType } from '../entities/tag.entity';
 
 export class CreateEpisodeDto {
   @ApiProperty({ description: '剧集标题' })
@@ -28,6 +24,35 @@ export class CreateEpisodeDto {
   @IsOptional()
   @IsString()
   source?: string;
+}
+
+export class VideoMetadataDto {
+  @ApiPropertyOptional({ description: '分辨率' })
+  @IsOptional()
+  @IsString()
+  resolution?: string;
+
+  @ApiPropertyOptional({ description: '码率(kbps)' })
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  bitrate?: number;
+
+  @ApiPropertyOptional({ description: '编码格式' })
+  @IsOptional()
+  @IsString()
+  codec?: string;
+
+  @ApiPropertyOptional({ description: '帧率' })
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  frameRate?: number;
+
+  @ApiPropertyOptional({ description: '音频编码' })
+  @IsOptional()
+  @IsString()
+  audioCodec?: string;
 }
 
 export class CreateVideoDto {
@@ -130,6 +155,18 @@ export class CreateVideoDto {
   @IsArray()
   @IsString({ each: true })
   tags?: string[];
+
+  @ApiPropertyOptional({ description: '播放格式', enum: VideoPlayFormat })
+  @IsOptional()
+  @IsEnum(VideoPlayFormat)
+  playFormat?: VideoPlayFormat;
+
+  @ApiPropertyOptional({ description: '视频元数据' })
+  @IsOptional()
+  @IsObject()
+  @ValidateNested()
+  @Type(() => VideoMetadataDto)
+  metadata?: VideoMetadataDto;
 }
 
 export class UpdateVideoDto extends CreateVideoDto {}
@@ -180,6 +217,27 @@ export class VideoListDto {
   @IsString()
   @Transform(({ value }) => value || undefined)
   keyword?: string;
+
+  @ApiPropertyOptional({ description: '标签' })
+  @IsOptional()
+  @IsString()
+  tag?: string;
+
+  @ApiPropertyOptional({ description: '播放格式', enum: VideoPlayFormat })
+  @IsOptional()
+  @IsEnum(VideoPlayFormat)
+  playFormat?: VideoPlayFormat;
+
+  @ApiPropertyOptional({ description: '标签列表' })
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  tags?: string[];
+
+  @ApiPropertyOptional({ description: '标签类型列表', enum: TagType, isArray: true })
+  @IsOptional()
+  @IsEnum(TagType, { each: true })
+  tagTypes?: TagType[];
 }
 
 export class UpdateEpisodeDto extends CreateEpisodeDto {} 

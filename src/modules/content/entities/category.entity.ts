@@ -1,6 +1,7 @@
 import { Entity, Column, Tree, TreeParent, TreeChildren, ManyToMany, JoinTable } from 'typeorm';
 import { BaseEntity } from '@common/entities/base.entity';
 import { Video } from './video.entity';
+import { Tag } from './tag.entity';
 
 @Entity('categories')
 @Tree("closure-table")
@@ -33,4 +34,13 @@ export class Category extends BaseEntity {
     inverseJoinColumn: { name: 'video_id', referencedColumnName: 'id' },
   })
   videos: Video[];
+
+  
+  @ManyToMany(() => Tag, tag => tag.videos)
+  @JoinTable({
+    name: 'category_tags',
+    joinColumn: { name: 'category_id', referencedColumnName: 'id' },
+    inverseJoinColumn: { name: 'tag_id', referencedColumnName: 'id' },
+  })
+  tagEntities: Tag[];
 } 

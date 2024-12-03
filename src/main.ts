@@ -6,13 +6,24 @@ import { TransformInterceptor } from './common/interceptors/transform.intercepto
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
 import { LoggingInterceptor } from './common/interceptors/logging.interceptor';
 import { LoggerService } from './shared/services/logger.service';
+import { ConfigService } from '@nestjs/config';
 import { NestExpressApplication } from '@nestjs/platform-express';
+import { IoAdapter } from '@nestjs/platform-socket.io';
 import { join } from 'path';
 import { Response } from 'express';
+import rateLimit from 'express-rate-limit';
+import helmet from 'helmet';
 
 async function bootstrap() {
   const app = await NestFactory.create<NestExpressApplication>(AppModule, {
     bufferLogs: true,
+  });
+  const configService = app.get(ConfigService);
+// 添加 CORS 配置
+app.enableCors({
+  origin: configService.get('CORS_ORIGINS'),
+  methods: ['GET', 'POST', 'PUT', 'DELETE'],
+    credentials: true,
   });
 
   // 配置静态文件服务
@@ -71,6 +82,18 @@ async function bootstrap() {
     res.send(document);
   });
 
+  // 添加 Helmet 安全头
+  app.use(helmet());
+   // 添加请求限制
+   app.use(
+    rateLimit({
+      windowMs: 15 * 60 * 1000, // 15分钟
+      max: 100, // 限制每个IP 100个请求
+    })
+  );
+
+  // 配置 WebSocket
+  app.useWebSocketAdapter(new IoAdapter(app));
   await app.listen(3000);
 }
 bootstrap();

@@ -1,13 +1,17 @@
 import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, In } from 'typeorm';
+import { Repository, In, DeepPartial } from 'typeorm';
 import { RedisService } from '@shared/services/redis.service';
 import { LoggerService } from '@shared/services/logger.service';
-import { Video } from '../entities/video.entity';
+import { Video, VideoStatus } from '../entities/video.entity';
 import { Category } from '../entities/category.entity';
 import { Episode } from '../entities/episode.entity';
 import { Person, PersonRole } from '../entities/person.entity';
-import { CreateVideoDto, UpdateVideoDto, VideoListDto, CreateEpisodeDto, VideoStatus } from '../dto/video.dto';
+import { CreateVideoDto, UpdateVideoDto, VideoListDto, CreateEpisodeDto } from '../dto/video.dto';
+import { TitleCleaner } from '@/modules/crawler/utils/title-cleaner';
+import { TagService } from './tag.service';
+import { tagConfig } from '@/config/tag.config';
+import { Tag, TagType } from '../entities/tag.entity';
 
 @Injectable()
 export class VideoService {
@@ -22,6 +26,7 @@ export class VideoService {
     private personRepository: Repository<Person>,
     private logger: LoggerService,
     private redisService: RedisService,
+    private tagService: TagService,
   ) {}
 
   async create(createVideoDto: CreateVideoDto): Promise<Video> {
@@ -50,6 +55,16 @@ export class VideoService {
       video.directors = directors;
     }
 
+    // 自动生成标签
+    const autoTags = await this.tagService.autoGenerateTags(video);
+    video.tagEntities = autoTags;
+
+    // 如果有手动添加的标签
+    if (createVideoDto.tags?.length) {
+      const manualTags = await this.tagService.findOrCreate(createVideoDto.tags);
+      video.tagEntities = [...video.tagEntities, ...manualTags];
+    }
+
     const savedVideo = await this.videoRepository.save(video);
 
     if (createVideoDto.episodes?.length) {
@@ -71,7 +86,8 @@ export class VideoService {
       .leftJoinAndSelect('video.categories', 'category')
       .leftJoinAndSelect('video.actors', 'actor')
       .leftJoinAndSelect('video.directors', 'director')
-      .leftJoinAndSelect('video.episodes', 'episode');
+      .leftJoinAndSelect('video.episodes', 'episode')
+      .leftJoinAndSelect('video.tagEntities', 'tag');
 
     if (categoryId) {
       queryBuilder.andWhere('category.id = :categoryId', { categoryId });
@@ -93,6 +109,16 @@ export class VideoService {
       queryBuilder.andWhere('(video.title LIKE :keyword OR video.description LIKE :keyword)', {
         keyword: `%${keyword}%`,
       });
+    }
+
+    // 添加标签筛选
+    if (query.tags?.length) {
+      queryBuilder.andWhere('tag.name IN (:...tags)', { tags: query.tags });
+    }
+
+    // 添加标签类型筛选
+    if (query.tagTypes?.length) {
+      queryBuilder.andWhere('tag.type IN (:...tagTypes)', { tagTypes: query.tagTypes });
     }
 
     const [items, total] = await queryBuilder
@@ -148,6 +174,19 @@ export class VideoService {
           role: PersonRole.DIRECTOR 
         }
       });
+    }
+
+    // 更新标签
+    if (updateVideoDto.tags !== undefined) {
+      // 保留自动生成的标签
+      const autoTags = video.tagEntities.filter(tag => 
+        tag.type !== TagType.OTHER
+      );
+
+      // 处理手动添加的标签
+      const manualTags = await this.tagService.findOrCreate(updateVideoDto.tags);
+      
+      video.tagEntities = [...autoTags, ...manualTags];
     }
 
     // 更新基本信息
@@ -309,35 +348,115 @@ export class VideoService {
     await this.episodeRepository.remove(episode);
   }
 
-  async updateEpisodes(videoId: string, episodes: any[]): Promise<void> {
+  async updateEpisodes(videoId: string, episodes: DeepPartial<Episode>[]): Promise<void> {
     const video = await this.findOne(videoId);
     
-    // 获取现有剧集
-    const existingEpisodes = await this.episodeRepository.find({
-      where: { video: { id: videoId } }
+    try {
+      // 先删除所有旧剧集
+      await this.episodeRepository
+        .createQueryBuilder()
+        .delete()
+        .where('videoId = :videoId', { videoId })
+        .execute();
+
+      // 对新剧集进行排序和去重
+      const uniqueEpisodes = this.removeDuplicateEpisodes(episodes);
+
+      // 创建新剧集
+      const newEpisodes: DeepPartial<Episode>[] = uniqueEpisodes.map(episode => ({
+        ...episode,
+        video
+      }));
+
+      // 批量保存新剧集
+      if (newEpisodes.length > 0) {
+        await this.episodeRepository.save(newEpisodes);
+      }
+
+      // 清除缓存
+      await this.clearVideoCache(videoId);
+    } catch (error) {
+      this.logger.error('Failed to update episodes', error.stack, 'VideoService');
+      throw new BadRequestException('更新剧集失败');
+    }
+  }
+
+  // 添加去重方法
+  private removeDuplicateEpisodes(episodes: DeepPartial<Episode>[]): DeepPartial<Episode>[] {
+    // 按集数排序
+    const sortedEpisodes = [...episodes].sort((a, b) => (a.episode || 0) - (b.episode || 0));
+    
+    // 使用 Map 去重，以集数为 key
+    const uniqueMap = new Map<number, DeepPartial<Episode>>();
+    sortedEpisodes.forEach(episode => {
+      if (episode.episode && !uniqueMap.has(episode.episode)) {
+        uniqueMap.set(episode.episode, episode);
+      }
     });
 
-    // 创建剧集映射以便快速查找
-    const episodeMap = new Map(
-      existingEpisodes.map(ep => [ep.episode, ep])
-    );
+    return Array.from(uniqueMap.values());
+  }
 
-    // 处理每一集
-    for (const episodeData of episodes) {
-      const existingEpisode = episodeMap.get(episodeData.episode);
-      
-      if (existingEpisode) {
-        // 更新现有剧集
-        Object.assign(existingEpisode, episodeData);
-        await this.episodeRepository.save(existingEpisode);
-      } else {
-        // 创建新剧集
-        const newEpisode = this.episodeRepository.create({
-          ...episodeData,
-          video
-        });
-        await this.episodeRepository.save(newEpisode);
+  async findSimilarVideo(title: string, threshold: number = 90): Promise<Video | null> {
+    // 获取所有视频
+    const videos = await this.videoRepository.find({
+      select: ['id', 'title', 'externalId']
+    });
+
+    // 查找相似度最高的视频
+    let mostSimilar: { video: Video; similarity: number } | null = null;
+
+    for (const video of videos) {
+      const similarity = TitleCleaner.similarity(title, video.title);
+      if (similarity >= threshold && (!mostSimilar || similarity > mostSimilar.similarity)) {
+        mostSimilar = { video, similarity };
       }
     }
+
+    if (mostSimilar) {
+      return this.findOne(mostSimilar.video.id);
+    }
+
+    return null;
+  }
+
+  private async validateTags(tags: Tag[]): Promise<void> {
+    const tagsByType = tags.reduce((acc: Record<string, number>, tag) => {
+      acc[tag.type] = (acc[tag.type] || 0) + 1;
+      return acc;
+    }, {});
+
+    // 检查每种类型的标签数量是否符合规则
+    Object.entries(tagsByType).forEach(([type, count]) => {
+      const rule = tagConfig.rules[type];
+      if (rule && count > rule.maxPerVideo) {
+        throw new BadRequestException(
+          `${type}类型的标签不能超过${rule.maxPerVideo}个`
+        );
+      }
+    });
+  }
+
+  // 添加标签相关的辅助方法
+  async updateTags(id: string, tags: string[]): Promise<Video> {
+    const video = await this.findOne(id);
+    const newTags = await this.tagService.findOrCreate(tags);
+    video.tagEntities = newTags;
+    return await this.videoRepository.save(video);
+  }
+
+  async refreshAutoTags(id: string): Promise<Video> {
+    const video = await this.findOne(id);
+    
+    // 保留手动添加的标签
+    const manualTags = video.tagEntities.filter(tag => 
+      tag.type === TagType.OTHER
+    );
+
+    // 重新生成自动标签
+    const autoTags = await this.tagService.autoGenerateTags(video);
+    
+    video.tagEntities = [...autoTags, ...manualTags];
+    return await this.videoRepository.save(video);
   }
 } 

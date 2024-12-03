@@ -3,11 +3,21 @@ import { BaseEntity } from '@common/entities/base.entity';
 import { Category } from './category.entity';
 import { Episode } from './episode.entity';
 import { Person } from './person.entity';
+import { Comment } from '@modules/user/entities/comment.entity';
+import { Collection } from '@modules/user/entities/collection.entity';
+import { WatchHistory } from '@modules/user/entities/watch-history.entity';
+import { Tag } from './tag.entity';
 
 export enum VideoStatus {
   DRAFT = 'draft',
   PUBLISHED = 'published',
   HIDDEN = 'hidden',
+}
+
+export enum VideoPlayFormat {
+  M3U8 = 'm3u8',
+  MP4 = 'mp4',
+  FLV = 'flv',
 }
 
 @Entity('videos')
@@ -84,9 +94,39 @@ export class Video extends BaseEntity {
   })
   episodes: Episode[];
 
-  @Column('simple-array', { nullable: true })
-  tags: string[];
+  @ManyToMany(() => Tag)
+  @JoinTable({
+    name: 'video_tags',
+    joinColumn: { name: 'video_id', referencedColumnName: 'id' },
+    inverseJoinColumn: { name: 'tag_id', referencedColumnName: 'id' },
+  })
+  tagEntities: Tag[];
 
   @Column({ type: 'timestamp', nullable: true })
   releaseDate: Date;
+
+  @OneToMany(() => Comment, comment => comment.video)
+  comments: Comment[];
+
+  @OneToMany(() => Collection, collection => collection.video)
+  collections: Collection[];
+
+  @OneToMany(() => WatchHistory, history => history.video)
+  watchHistories: WatchHistory[];
+
+  @Column({
+    type: 'enum',
+    enum: VideoPlayFormat,
+    default: VideoPlayFormat.M3U8
+  })
+  playFormat: VideoPlayFormat;
+
+  @Column({ type: 'jsonb', nullable: true })
+  metadata: {
+    resolution?: string;    // 分辨率
+    bitrate?: number;       // 码率
+    codec?: string;         // 编码格式
+    frameRate?: number;     // 帧率
+    audioCodec?: string;    // 音频编码
+  };
 } 

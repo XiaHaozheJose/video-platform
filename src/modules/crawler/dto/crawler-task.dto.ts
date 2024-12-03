@@ -142,4 +142,59 @@ export class CrawlProgressDto {
 
   @ApiProperty({ description: '当前页视频列表' })
   videos: VideoInfo[];
+}
+
+export enum TimeRange {
+  DAY = 'day',
+  WEEK = 'week',
+  MONTH = 'month',
+  ALL = 'all'
+}
+
+export class CollectByTimeDto {
+  @ApiProperty({ description: '时间范围', enum: TimeRange })
+  @IsEnum(TimeRange)
+  timeRange: TimeRange;
+
+  @ApiProperty({ description: '页码' })
+  @IsNumber()
+  @Min(1)
+  page: number;
+
+  @ApiProperty({ description: '资源ID' })
+  @IsString()
+  sourceId: string;
+}
+
+export interface CollectResult {
+  videos: Array<{
+    name: string;
+    status: 'new' | 'updated' | 'skipped';
+    changes?: {
+      cover?: boolean;
+      episodes?: boolean;
+      description?: boolean;
+      actors?: boolean;
+      directors?: boolean;
+    };
+    reason?: string;
+  }>;
+  isCompleted: boolean;
+  lastVideoTime?: string;
+}
+
+export interface MatchRules {
+  titleSimilarityThreshold: number;  // 标题相似度阈值
+  useExternalIdOnly: boolean;        // 是否只使用外部ID匹配
+  updateExisting: boolean;           // 是否更新已存在的视频
+  matchFields: {                     // 匹配字段配置
+    year: boolean;                   // 是否匹配年份
+    area: boolean;                   // 是否匹配地区
+    director: boolean;               // 是否匹配导演
+  };
+}
+
+export interface TaskConfig {
+  matchRules: MatchRules;
+  // ... 其他配置
 } 

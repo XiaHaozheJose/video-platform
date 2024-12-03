@@ -7,16 +7,18 @@ import { CrawlerTask, TaskStatus, TaskType } from '../entities/crawler-task.enti
 import { CrawlerLog, LogLevel } from '../entities/crawler-log.entity';
 import { CreateTaskDto, UpdateTaskDto, TaskResultDto, CrawlProgressDto, VideoInfo } from '../dto/crawler-task.dto';
 import { VideoService } from '@modules/content/services/video.service';
-import { CreateVideoDto, VideoStatus } from '@modules/content/dto/video.dto';
+import { CreateVideoDto } from '@modules/content/dto/video.dto';
 import { LoggerService } from '@shared/services/logger.service';
 import { Person, PersonRole } from '@modules/content/entities/person.entity';
 import { Category } from '@modules/content/entities/category.entity';
-import { Video } from '@modules/content/entities/video.entity';
+import { Video, VideoStatus } from '@modules/content/entities/video.entity';
 import { CrawlerLogService } from './crawler-log.service';
 import { ResourceAdapterFactory } from '../factories/resource-adapter.factory';
 import { CrawlerSource } from '../entities/crawler-source.entity';
 import { EventEmitter2 } from '@nestjs/event-emitter';
-import { CrawlerThirdResourceDto, CrawlerThirdResourceDataDto, CrawlerThirdResourceClassDto } from '../dto/crawler-third-resource.dto';
+import { CrawlerThirdResourceDto, CrawlerThirdResourceDataDto, CrawlerThirdResourceCategpryDto } from '../dto/crawler-third-resource.dto';
+import { CollectByTimeDto, TimeRange, CollectResult } from '../dto/crawler-task.dto';
+import { SourceListQueryDto, CollectSelectedDto } from '../dto/crawler-source-list.dto';
 
 @Injectable()
 export class CrawlerService {
@@ -159,7 +161,7 @@ export class CrawlerService {
         await this.crawlerLogService.createLog(
           task,
           LogLevel.WARNING,
-          '任务完成，但存在失败项',
+          '任务成，但存在失败',
           { failures: result.failures },
         );
       } else {
@@ -215,11 +217,11 @@ export class CrawlerService {
       let hasMore = true;
 
       // 获取第一页来确定总页数
-      const firstPageData = await adapter.getList(1);
+      const firstPageData = await adapter.getDetailList(1);
       const totalPages = Math.ceil(Number(firstPageData.total) / Number(firstPageData.limit));
 
       while (hasMore) {
-        const listData = currentPage === 1 ? firstPageData : await adapter.getList(currentPage);
+        const listData = currentPage === 1 ? firstPageData : await adapter.getDetailList(currentPage);
         const progressData: CrawlProgressDto = {
           currentPage,
           totalPages,
@@ -249,21 +251,20 @@ export class CrawlerService {
               };
 
               // 检查是否已存在
-              const existingVideo = await this.videoService.findByExternalId(
-                item.vod_id.toString()
-              );
+              const existingVideo = await this.findExistingVideo(item);
 
               if (existingVideo) {
                 // 检查是否需要更新
                 const needsUpdate = this.checkNeedsUpdate(existingVideo, item);
-                if (needsUpdate && task.type === TaskType.INCREMENT) {
+                if (needsUpdate) { // && task.type === TaskType.INCREMENT
                   await this.updateVideo(existingVideo, item, task.config);
                   videoInfo.status = 'updated';
                   result.successCount++;
-                } else {
-                  videoInfo.status = 'skipped';
-                  videoInfo.reason = '无需更新';
                 }
+                //  else {
+                //   videoInfo.status = 'skipped';
+                //   videoInfo.reason = '无需更新';
+                // }
               } else {
                 // 新增视频
                 await this.createVideo(item);
@@ -304,11 +305,17 @@ export class CrawlerService {
           }
         }
       }
+
+      // 发送任务完成事件
+      this.eventEmitter.emit(`task.complete.${task.id}`, {
+        message: '任务完成',
+        result
+      });
+
+      return result;
     } catch (error) {
       throw error;
     }
-
-    return result;
   }
 
   private checkNeedsUpdate(existingVideo: Video, newData: CrawlerThirdResourceDataDto): boolean {
@@ -378,52 +385,72 @@ export class CrawlerService {
     await this.videoService.create(videoDto);
   }
 
-  private async updateVideo(existingVideo: Video, videoDetail: CrawlerThirdResourceDataDto, config: any): Promise<void> {
-    const { updateStrategy } = config.matchRules || {};
-    const updateDto: any = {};
+  private async updateVideo(existingVideo: Video, videoDetail: CrawlerThirdResourceDataDto, config: any): Promise<any> {
+    const changes = {
+      cover: false,
+      episodes: false,
+      description: false,
+      actors: false,
+      directors: false,
+    };
 
-    // 根据更新策略选择要更新的字段
-    if (updateStrategy?.cover) {
-      updateDto.cover = videoDetail.vod_pic;
-    }
-    if (updateStrategy?.description) {
-      updateDto.description = videoDetail.vod_content;
-    }
-    if (updateStrategy?.rating) {
-      updateDto.rating = parseFloat(videoDetail.vod_score) || 0;
-    }
-
-    // 更新基本信息
-    if (Object.keys(updateDto).length > 0) {
-      await this.videoService.update(existingVideo.id, {
-        ...updateDto,
-        viewCount: existingVideo.viewCount, // 保留播放次数
-      });
+    // 检查并更新封面
+    if (existingVideo.cover !== videoDetail.vod_pic) {
+      changes.cover = true;
     }
 
-    // 更新剧集信息
-    if (updateStrategy?.episodes) {
-      const episodes = this.transformEpisodes(videoDetail.vod_play_url, videoDetail.vod_play_from);
-      if (episodes?.length) {
-        const existingEpisodes = existingVideo.episodes || [];
-        
-        for (const episode of episodes) {
-          const existingEpisode = existingEpisodes.find(
-            e => e.episode === episode.episode
-          );
-          
-          if (existingEpisode) {
-            await this.videoService.updateEpisode(
-              existingVideo.id,
-              existingEpisode.id,
-              episode
-            );
-          } else {
-            await this.videoService.addEpisode(existingVideo.id, episode);
-          }
-        }
-      }
+    // 检查并更新剧集
+    if (this.checkEpisodesNeedUpdate(existingVideo.episodes, videoDetail.vod_play_url, videoDetail.vod_play_from)) {
+      changes.episodes = true;
+      await this.videoService.updateEpisodes(existingVideo.id, 
+        this.transformEpisodes(videoDetail.vod_play_url, videoDetail.vod_play_from)
+      );
     }
+
+    // 检查并更新描述
+    const cleanDescription = videoDetail.vod_content?.replace(/<[^>]+>/g, '') || '';
+    if (existingVideo.description !== cleanDescription) {
+      changes.description = true;
+    }
+
+    // 更新演员和导演
+    const actorNames = videoDetail.vod_actor?.split(/[,，、\s]+/).filter(Boolean) || [];
+    const directorNames = videoDetail.vod_director?.split(/[,，、\s]+/).filter(Boolean) || [];
+
+    const actorIds = await this.processActors(actorNames);
+    const directorIds = await this.processDirectors(directorNames);
+
+    if (!this.areArraysEqual(existingVideo.actors.map(a => a.id), actorIds)) {
+      changes.actors = true;
+    }
+
+    if (!this.areArraysEqual(existingVideo.directors.map(d => d.id), directorIds)) {
+      changes.directors = true;
+    }
+
+    // 保存更新
+    await this.videoService.update(existingVideo.id, {
+      title: videoDetail.vod_name,
+      description: cleanDescription,
+      cover: videoDetail.vod_pic || '',
+      year: parseInt(videoDetail.vod_year) || new Date().getFullYear(),
+      area: videoDetail.vod_area || '未知',
+      language: videoDetail.vod_lang || '未知',
+      rating: parseFloat(videoDetail.vod_score) || 0,
+      updateStatus: videoDetail.vod_remarks || '',
+      actorIds,
+      directorIds,
+      categoryIds: existingVideo.categories.map(c => c.id), // 保持原有分类
+    });
+
+    return changes;
+  }
+
+  private areArraysEqual(arr1: string[], arr2: string[]): boolean {
+    if (arr1.length !== arr2.length) return false;
+    const sorted1 = [...arr1].sort();
+    const sorted2 = [...arr2].sort();
+    return sorted1.every((item, index) => item === sorted2[index]);
   }
 
   private async handleCategories(videoDetail: any, task: CrawlerTask): Promise<string[]> {
@@ -508,6 +535,9 @@ export class CrawlerService {
       // 直接使用 # 分割剧集
       const episodeList = playUrl.split('#').filter(Boolean);
       
+      // 使用 Set 记录已处理的集数
+      const processedEpisodes = new Set();
+      
       episodeList.forEach((item, index) => {
         // 分割集标题和播放地址，用 $ 分割
         const [title = '', url = ''] = item.split('$');
@@ -517,12 +547,22 @@ export class CrawlerService {
         const episodeMatch = title.match(/(\d+)/);
         const episodeNumber = episodeMatch ? parseInt(episodeMatch[1]) : index + 1;
 
-        episodes.push({
-          title: title.trim() || `第${episodeNumber}集`,
-          episode: episodeNumber,
-          playUrl: url.trim(),
-          source: playFrom || 'unknown',  // 使用 vod_play_from 作为播放源
-        });
+        // 检查是否已存在该集数
+        if (!processedEpisodes.has(episodeNumber)) {
+          processedEpisodes.add(episodeNumber);
+          
+          episodes.push({
+            title: title.trim() || `第${episodeNumber}集`,
+            episode: episodeNumber,
+            playUrl: url.trim(),
+            source: playFrom || 'unknown',
+          });
+        } else {
+          this.logger.warn(
+            `Duplicate episode found: ${episodeNumber} in video with playUrl: ${playUrl}`,
+            'CrawlerService'
+          );
+        }
       });
 
       // 按集数排序
@@ -618,7 +658,7 @@ export class CrawlerService {
     }
   }
 
-  async getSourceCategories(url: string): Promise<CrawlerThirdResourceClassDto[]> {
+  async getSourceCategories(url: string): Promise<CrawlerThirdResourceCategpryDto[]> {
     try {
       const adapter = this.resourceAdapterFactory.createAdapter(url);
       return await adapter.getCategories();
@@ -668,5 +708,190 @@ export class CrawlerService {
 
     task.status = TaskStatus.RUNNING;
     return await this.crawlerTaskRepository.save(task);
+  }
+
+  async collectByTime(collectDto: CollectByTimeDto): Promise<CollectResult> {
+    const { sourceId, timeRange, page } = collectDto;
+
+    // 获取爬虫源
+    const source = await this.crawlerSourceRepository.findOne({
+      where: { id: sourceId }
+    });
+
+    if (!source) {
+      throw new NotFoundException('爬虫源不存在');
+    }
+
+    // 计算时间围
+    const now = new Date();
+    let timeLimit: Date;
+    switch (timeRange) {
+      case TimeRange.DAY:
+        timeLimit = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+        break;
+      case TimeRange.WEEK:
+        timeLimit = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+        break;
+      case TimeRange.MONTH:
+        timeLimit = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+        break;
+      case TimeRange.ALL:
+        timeLimit = new Date(0);
+        break;
+    }
+
+    // 获取资源列表
+    const adapter = this.resourceAdapterFactory.createAdapter(source.baseUrl);
+    const listData = await adapter.getDetailList(page);
+
+    const result: CollectResult = {
+      videos: [],
+      isCompleted: false,
+      lastVideoTime: null,
+    };
+
+    // 处理每个视频
+    for (const item of listData.list) {
+      const videoTime = new Date(parseInt(item.vod_time) * 1000);
+      result.lastVideoTime = item.vod_time;
+
+      // 检查是否超出时间范围
+      if (videoTime < timeLimit) {
+        result.isCompleted = true;
+        break;
+      }
+
+      try {
+        const existingVideo = await this.videoService.findByExternalId(
+          item.vod_id.toString()
+        );
+
+        const videoResult: CollectResult['videos'][0] = {
+          name: item.vod_name,
+          status: 'skipped',
+          changes: {},
+        };
+
+        if (existingVideo) {
+          const needsUpdate = this.checkNeedsUpdate(existingVideo, item);
+          if (needsUpdate) {
+            const changes = await this.updateVideo(existingVideo, item, {});
+            videoResult.status = 'updated' as const;
+            videoResult.changes = changes;
+          }
+        } else {
+          await this.createVideo(item);
+          videoResult.status = 'new' as const;
+        }
+
+        result.videos.push(videoResult);
+      } catch (error) {
+        result.videos.push({
+          name: item.vod_name,
+          status: 'skipped',
+          reason: error.message,
+        });
+      }
+    }
+
+    return result;
+  }
+
+  async getSourceVodList(query: SourceListQueryDto): Promise<CrawlerThirdResourceDto> {
+    const { sourceId, page, typeId, keyword } = query;
+
+    const source = await this.crawlerSourceRepository.findOne({
+      where: { id: sourceId }
+    });
+
+    if (!source) {
+      throw new NotFoundException('爬虫源不存在');
+    }
+
+    const adapter = this.resourceAdapterFactory.createAdapter(source.baseUrl);
+
+    try {
+      const data = await adapter.getList(page, { typeId, keyword });
+      return data;
+    } catch (error) {
+      this.logger.error('Failed to get source list', error.stack, 'CrawlerService');
+      throw new BadRequestException('获取资源列表失败');
+    }
+  }
+
+  async collectVodsSelected(dto: CollectSelectedDto): Promise<TaskResultDto> {
+    const { sourceId, videoIds } = dto;
+
+    const source = await this.crawlerSourceRepository.findOne({
+      where: { id: sourceId }
+    });
+
+    if (!source) {
+      throw new NotFoundException('爬虫源不存在');
+    }
+
+    const adapter = this.resourceAdapterFactory.createAdapter(source.baseUrl);
+
+    try {
+      const videoList = await adapter.getDetail(videoIds);
+      const result: TaskResultDto = {
+        successCount: 0,
+        failCount: 0,
+        failures: [],
+      };
+
+      // 处理每个视频
+      for (const item of videoList) {
+        try {
+          const existingVideo = await this.findExistingVideo(item);
+
+          if (existingVideo) {
+            const needsUpdate = this.checkNeedsUpdate(existingVideo, item);
+            if (needsUpdate) {
+              await this.updateVideo(existingVideo, item, {});
+              result.successCount++;
+            }
+          } else {
+            await this.createVideo(item);
+            result.successCount++;
+          }
+        } catch (error) {
+          result.failCount++;
+          result.failures.push({
+            data: item,
+            error: error.message,
+          });
+        }
+      }
+
+      return result;
+    } catch (error) {
+      this.logger.error('Failed to collect selected videos', error.stack, 'CrawlerService');
+      throw new BadRequestException('采集选中视频失败');
+    }
+  }
+
+  private async findExistingVideo(videoDetail: any): Promise<Video | null> {
+    // 1. 先通过 externalId 精确查找
+    let existingVideo = await this.videoService.findByExternalId(
+      videoDetail.vod_id.toString()
+    );
+
+    if (existingVideo) {
+      return existingVideo;
+    }
+
+    // 2. 通过标题相似度查找
+    existingVideo = await this.videoService.findSimilarVideo(videoDetail.vod_name);
+    
+    if (existingVideo) {
+      // 记录匹配日志
+      this.logger.log(
+        `Found similar video: ${videoDetail.vod_name} -> ${existingVideo.title}`,
+        'CrawlerService'
+      );
+    }
+
+    return existingVideo;
   }
 } 

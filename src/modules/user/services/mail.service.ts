@@ -50,7 +50,7 @@ export class MailService {
     }
   }
 
-  private async sendEmail(options: {
+  public async sendEmail(options: {
     to: string;
     subject: string;
     html: string;

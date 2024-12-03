@@ -20,9 +20,9 @@ import {
   UpdateVideoDto, 
   VideoListDto, 
   CreateEpisodeDto,
-  VideoStatus,
 } from '../dto/video.dto';
 import { AdminGuard } from '@modules/user/guards/admin.guard';
+import { VideoStatus } from '../entities/video.entity';
 
 @ApiTags('视频管理')
 @Controller('videos')
@@ -167,5 +167,24 @@ export class VideoController {
     @Param('episodeId') episodeId: string
   ) {
     return await this.videoService.deleteEpisode(videoId, episodeId);
+  }
+
+  @Put(':id/tags')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: '更新视频标签' })
+  async updateTags(
+    @Param('id') id: string,
+    @Body() body: { tags: string[] }
+  ) {
+    return await this.videoService.updateTags(id, body.tags);
+  }
+
+  @Post(':id/refresh-tags')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: '刷新视频自动标签' })
+  async refreshAutoTags(@Param('id') id: string) {
+    return await this.videoService.refreshAutoTags(id);
   }
 } 

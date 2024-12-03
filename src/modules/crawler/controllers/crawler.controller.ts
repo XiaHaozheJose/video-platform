@@ -1,15 +1,23 @@
-import { Controller, Post, Body, Get, Param, Put, Delete, Query, UseGuards } from '@nestjs/common';
+import { Controller, Post, Body, Get, Param, Put, Delete, Query, UseGuards, Sse } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { JwtAuthGuard } from '@modules/user/guards/jwt-auth.guard';
 import { CrawlerService } from '../services/crawler.service';
 import { CreateTaskDto, UpdateTaskDto } from '../dto/crawler-task.dto';
+import { Observable } from 'rxjs';
+import { EventEmitter2 } from '@nestjs/event-emitter';
+import { CollectByTimeDto } from '../dto/crawler-task.dto';
+import { AdminGuard } from '@modules/user/guards/admin.guard';
+import { SourceListQueryDto, CollectSelectedDto } from '../dto/crawler-source-list.dto';
 
 @ApiTags('采集管理')
 @Controller('crawler')
 @UseGuards(JwtAuthGuard)
 @ApiBearerAuth()
 export class CrawlerController {
-  constructor(private readonly crawlerService: CrawlerService) {}
+  constructor(
+    private readonly crawlerService: CrawlerService,
+    private eventEmitter: EventEmitter2,
+  ) {}
 
   @Post('tasks')
   @ApiOperation({ summary: '创建采集任务' })
@@ -77,5 +85,47 @@ export class CrawlerController {
   @ApiOperation({ summary: '恢复任务' })
   resumeTask(@Param('id') id: string) {
     return this.crawlerService.resumeTask(id);
+  }
+
+  @Sse('tasks/:id/progress')
+  taskProgress(@Param('id') id: string): Observable<any> {
+    return new Observable(subscriber => {
+      const listener = (progress: any) => {
+        subscriber.next({ data: progress });
+      };
+
+      // 订阅任务进度事件
+      this.eventEmitter.on(`task.progress.${id}`, listener);
+
+      // 订阅任务完成事件
+      this.eventEmitter.once(`task.complete.${id}`, () => {
+        subscriber.complete();
+      });
+
+      // 清理函数
+      return () => {
+        this.eventEmitter.removeListener(`task.progress.${id}`, listener);
+      };
+    });
+  }
+
+  @Post('collect-by-time')
+  @UseGuards(JwtAuthGuard, AdminGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: '按时间范围采集资源' })
+  async collectByTime(@Body() collectDto: CollectByTimeDto) {
+    return await this.crawlerService.collectByTime(collectDto);
+  }
+
+  @Get('source/list')
+  @ApiOperation({ summary: '获取资源站视频列表' })
+  async getSourceVodList(@Query() query: SourceListQueryDto) {
+    return await this.crawlerService.getSourceVodList(query);
+  }
+
+  @Post('source/collect')
+  @ApiOperation({ summary: '采集选中的视频' })
+  async collectSelected(@Body() dto: CollectSelectedDto) {
+    return await this.crawlerService.collectVodsSelected(dto);
   }
 } 

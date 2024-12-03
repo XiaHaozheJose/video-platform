@@ -239,4 +239,12 @@ export class AuthService {
     // 删除Redis中的token
     await this.redisService.del(`password_reset:${token}`);
   }
+
+  async findUserById(id: string): Promise<User> {
+    const user = await this.userRepository.findOne({ where: { id } });
+    if (!user) {
+      throw new NotFoundException('用户不存在');
+    }
+    return user;
+  }
 } 
